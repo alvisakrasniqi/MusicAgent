@@ -60,15 +60,5 @@ Open these in your browser or Postman:
 - `GET http://127.0.0.1:8000/users/db-ping`
 - `POST http://127.0.0.1:8000/users/`
 - `GET http://127.0.0.1:8000/users/`
-
-Example JSON body for `POST /users/`:
-
-```json
-{
-  "username": "testuser1",
-  "first_name": "Test",
-  "last_name": "User",
-  "email": "testuser1@example.com",
-  "password": "password123"
 }
 ```
