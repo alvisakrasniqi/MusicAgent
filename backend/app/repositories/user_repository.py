@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from bson import ObjectId
@@ -8,7 +8,7 @@ from pymongo import ASCENDING
 
 
 USER_COLLECTION = "users"
-PUBLIC_USER_PROJECTION = {"hashed_password": 0}
+PUBLIC_USER_PROJECTION = {"hashed_password": 0, "spotify": 0}
 
 
 def _users_collection(db: AsyncIOMotorDatabase):
@@ -140,3 +140,62 @@ async def delete_user(
     users = _users_collection(db)
     result = await users.delete_one({"_id": object_id})
     return result.deleted_count == 1
+
+
+async def save_user_spotify_tokens(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    token_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    object_id = _to_object_id(user_id)
+    if object_id is None:
+        return None
+
+    users = _users_collection(db)
+    now = _utc_now()
+
+    expires_in = int(token_payload.get("expires_in", 0) or 0)
+    expires_at = now + timedelta(seconds=expires_in) if expires_in > 0 else None
+
+    updates: dict[str, Any] = {
+        "spotify.access_token": token_payload.get("access_token"),
+        "spotify.token_type": token_payload.get("token_type"),
+        "spotify.scope": token_payload.get("scope"),
+        "spotify.expires_in": expires_in,
+        "spotify.expires_at": expires_at,
+        "spotify.updated_at": now,
+        "updated_at": now,
+    }
+
+    refresh_token = token_payload.get("refresh_token")
+    if refresh_token:
+        updates["spotify.refresh_token"] = refresh_token
+
+    updates = {k: v for k, v in updates.items() if v is not None}
+
+    result = await users.update_one({"_id": object_id}, {"$set": updates})
+    if result.matched_count == 0:
+        return None
+
+    doc = await users.find_one({"_id": object_id}, PUBLIC_USER_PROJECTION)
+    return _serialize_user(doc)
+
+
+async def get_user_spotify_auth(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> dict[str, Any] | None:
+    object_id = _to_object_id(user_id)
+    if object_id is None:
+        return None
+
+    users = _users_collection(db)
+    doc = await users.find_one({"_id": object_id}, {"spotify": 1})
+    if not doc:
+        return None
+
+    spotify_auth = doc.get("spotify")
+    if not isinstance(spotify_auth, dict):
+        return None
+
+    return spotify_auth
