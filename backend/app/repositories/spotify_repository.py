@@ -30,6 +30,25 @@ async def create_spotify_snapshot_indexes(db: AsyncIOMotorDatabase) -> None:
     await snapshots.create_index([("user_id", ASCENDING), ("fetched_at", DESCENDING)])
 
 
+async def get_latest_spotify_snapshot(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> dict | None:
+    object_id = _to_object_id(user_id)
+    if object_id is None:
+        return None
+
+    snapshots = _spotify_snapshots_collection(db)
+    doc = await snapshots.find_one(
+        {"user_id": object_id},
+        sort=[("fetched_at", DESCENDING)],
+    )
+    if doc:
+        doc["_id"] = str(doc["_id"])
+        doc["user_id"] = str(doc["user_id"])
+    return doc
+
+
 async def create_spotify_ingestion_snapshot(
     db: AsyncIOMotorDatabase,
     user_id: str,

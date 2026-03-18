@@ -7,3 +7,6 @@ pydantic-settings
 pydantic[email]
 certifi
 requests
+langchain
+langchain-google-genai
+langsmith

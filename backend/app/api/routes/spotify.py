@@ -1,10 +1,17 @@
 from datetime import datetime, timezone
+import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.api.deps.auth import (
+    get_current_user,
+    get_optional_current_user,
+    pop_spotify_oauth_state,
+    set_spotify_oauth_state,
+)
 from app.core.config import settings
 from app.core.database import get_database
 from app.repositories.spotify_repository import create_spotify_ingestion_snapshot
@@ -15,6 +22,13 @@ import requests
 
 router = APIRouter()
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
+
+
+def _frontend_callback_redirect(params: dict[str, str]) -> RedirectResponse:
+    frontend_callback_url = f"{settings.FRONTEND_URL.rstrip('/')}/auth/callback"
+    query_string = urllib.parse.urlencode(params)
+    destination = frontend_callback_url if not query_string else f"{frontend_callback_url}?{query_string}"
+    return RedirectResponse(destination)
 
 
 def _exchange_code_for_token(code: str) -> dict[str, Any]:
@@ -90,87 +104,68 @@ def _is_expired(expires_at: Any) -> bool:
     return expires_dt <= datetime.now(timezone.utc)
 
 @router.get("/spotify/login")
-def spotify_login():
+def spotify_login(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
     scope = "user-read-recently-played user-top-read playlist-modify-private"
-    
+
+    state = secrets.token_urlsafe(32)
+    set_spotify_oauth_state(request, state)
+
     params = {
         "client_id": settings.SPOTIFY_CLIENT_ID,
         "response_type": "code",
         "redirect_uri": settings.SPOTIFY_REDIRECT_URI,
         "scope": scope,
+        "state": state,
     }
 
     url = "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(params)
-    
+
     return RedirectResponse(url)
 
 
 
 @router.get("/spotify/callback")
-def spotify_callback(code: str | None = None, error: str | None = None):
+async def spotify_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    current_user: dict[str, Any] | None = Depends(get_optional_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    if not current_user:
+        return _frontend_callback_redirect({"error": "session_required"})
+
+    expected_state = pop_spotify_oauth_state(request)
+
     if error:
-        return {"error": error, "message": "Spotify authorization was denied or failed"}
+        return _frontend_callback_redirect({"error": error})
     if not code:
-        return {"error": "no_code", "message": "No authorization code received from Spotify"}
-    return {"code": code, "message": "Copy this code and use /auth/spotify/exchange with your user_id"}
+        return _frontend_callback_redirect({"error": "no_code"})
+    if not state or state != expected_state:
+        return _frontend_callback_redirect({"error": "invalid_state"})
 
+    try:
+        token_payload = _exchange_code_for_token(code)
+    except (HTTPException, requests.RequestException):
+        return _frontend_callback_redirect({"error": "token_exchange_failed"})
 
-@router.get("/spotify/exchange")
-async def spotify_exchange(
-    code: str,
-    user_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_database),
-) -> dict[str, Any]:
-    token_payload = _exchange_code_for_token(code)
-    updated_user = await save_user_spotify_tokens(db, user_id, token_payload)
+    updated_user = await save_user_spotify_tokens(db, current_user["_id"], token_payload)
     if not updated_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return _frontend_callback_redirect({"error": "user_not_found"})
 
-    return {
-        "stored": True,
-        "user_id": user_id,
-        "token_type": token_payload.get("token_type"),
-        "scope": token_payload.get("scope"),
-        "expires_in": token_payload.get("expires_in"),
-    }
-
-
-@router.get("/spotify/exchange-from-redirect")
-async def spotify_exchange_from_redirect(
-    redirect_url: str,
-    user_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_database),
-) -> dict[str, Any]:
-    parsed = urllib.parse.urlparse(redirect_url)
-    query = urllib.parse.parse_qs(parsed.query)
-    code_values = query.get("code", [])
-    code = code_values[0] if code_values else None
-
-    if not code:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No code found in redirect_url",
-        )
-
-    token_payload = _exchange_code_for_token(code)
-    updated_user = await save_user_spotify_tokens(db, user_id, token_payload)
-    if not updated_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    return {
-        "stored": True,
-        "user_id": user_id,
-        "token_type": token_payload.get("token_type"),
-        "scope": token_payload.get("scope"),
-        "expires_in": token_payload.get("expires_in"),
-    }
+    return _frontend_callback_redirect({"status": "linked"})
 
 
 @router.post("/spotify/ingest")
 async def spotify_ingest(
-    user_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict[str, Any]:
+    user_id = current_user["_id"]
     spotify_auth = await get_user_spotify_auth(db, user_id)
     if not spotify_auth:
         raise HTTPException(

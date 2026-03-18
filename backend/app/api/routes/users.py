@@ -1,4 +1,3 @@
-import hashlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
 from app.core.database import get_database
+from app.core.security import hash_password
 from app.models.user import UserCreate, UserUpdate, UserResponse
 from app.repositories.user_repository import (
     create_user,
@@ -19,11 +19,6 @@ from app.repositories.user_repository import (
 
 
 router = APIRouter(prefix="/users", tags=["users"])
-
-
-def _hash_password_for_now(password: str) -> str:
-    # Temporary hash helper for DB testing only. Replace with passlib/pwdlib + salt.
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
 @router.get("/db-ping")
@@ -56,7 +51,7 @@ async def create_user_route(
         "first_name": payload.first_name,
         "last_name": payload.last_name,
         "email": payload.email,
-        "hashed_password": _hash_password_for_now(payload.password),
+        "hashed_password": hash_password(payload.password),
     }
 
     try:
@@ -109,7 +104,7 @@ async def update_user_route(
     update_payload = payload.model_dump(exclude_none=True)
 
     if "password" in update_payload:
-        update_payload["hashed_password"] = _hash_password_for_now(update_payload.pop("password"))
+        update_payload["hashed_password"] = hash_password(update_payload.pop("password"))
 
     if not update_payload:
         raise HTTPException(

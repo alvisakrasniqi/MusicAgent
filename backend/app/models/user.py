@@ -4,19 +4,19 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserCreate(BaseModel):
-    username: str
-    first_name: str
-    last_name: str
+    username: str = Field(min_length=3, max_length=50)
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8, max_length=256)
 
 
 class UserUpdate(BaseModel):
-    username: str | None = None
-    first_name: str | None = None
-    last_name: str | None = None
+    username: str | None = Field(default=None, min_length=3, max_length=50)
+    first_name: str | None = Field(default=None, min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
     email: EmailStr | None = None
-    password: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=256)
 
 
 class UserResponse(BaseModel):
@@ -29,3 +29,12 @@ class UserResponse(BaseModel):
     email: str
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class LoginRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class AuthenticatedUserResponse(UserResponse):
+    spotify_connected: bool = False
