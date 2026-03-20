@@ -25,6 +25,10 @@ You are a music recommendation assistant called MusicAgent. You have access to t
 user's Spotify listening data, saved music, playlists, current playback context, \
 recent session behavior, stored mood context, and prior recommendation feedback.
 
+A recommendation context bundle is already prefetched and provided in the system prompt. \
+Treat that bundle as your baseline source of truth before deciding whether to call any \
+extra tools.
+
 Use this data to understand the user's taste and provide personalized music \
 recommendations. When recommending songs:
 - Explain why each recommendation fits the user's taste or current context
@@ -32,10 +36,8 @@ recommendations. When recommending songs:
 - Use search_tracks to verify real tracks on Spotify before recommending them
 - If the user explicitly says what mood or context they are in today, store it with set_user_mood
 - If the user gives explicit feedback about artists, tracks, or recommendation quality, store it with record_feedback
-- Use get_feedback_profile, get_user_mood, get_time_context, and recent session tools when they help
-
-Always call get_music_profile first for recommendation requests. Then use only the extra tools that \
-materially improve the answer instead of calling everything by default.\
+- Use the other context tools only when you need a live refresh or the user asks for details beyond the prefetched bundle
+- Do not recommend tracks until you have verified real candidate songs with search_tracks
 """
 
 
@@ -196,15 +198,229 @@ def _summarize_snapshot(snapshot: dict[str, Any]) -> str:
     return "\n\n".join(parts) if parts else "No listening data available."
 
 
+def _access_token_message() -> str:
+    return "Spotify access token not available. Cannot use this Spotify tool."
+
+
+def _get_time_context_text() -> str:
+    now = datetime.now().astimezone()
+    hour = now.hour
+    if 5 <= hour < 11:
+        day_part = "morning"
+    elif 11 <= hour < 15:
+        day_part = "midday"
+    elif 15 <= hour < 19:
+        day_part = "afternoon"
+    elif 19 <= hour < 23:
+        day_part = "evening"
+    else:
+        day_part = "late night"
+
+    weekday = now.strftime("%A")
+    is_weekend = weekday in {"Saturday", "Sunday"}
+    weekend_label = "weekend" if is_weekend else "workweek"
+    return (
+        f"It is currently {now.isoformat()} local time. "
+        f"Context: {day_part}, {weekday}, {weekend_label}."
+    )
+
+
+def _fetch_saved_tracks_text(access_token: str | None, limit: int = 12) -> str:
+    if not access_token:
+        return _access_token_message()
+
+    safe_limit = max(1, min(limit, 50))
+    try:
+        items = spotify_get_paginated_items(
+            "/me/tracks",
+            access_token,
+            params={"limit": safe_limit},
+            max_pages=1,
+        )
+    except HTTPException as exc:
+        return str(exc.detail)
+
+    if not items:
+        return "No saved tracks were found or the user has not granted saved-track access."
+
+    lines = []
+    for item in items[:safe_limit]:
+        if not isinstance(item, dict):
+            continue
+        added_at = item.get("added_at")
+        track = _extract_track(item)
+        if not isinstance(track, dict):
+            continue
+        prefix = f"[saved {added_at}] " if isinstance(added_at, str) and added_at else ""
+        lines.append(f"- {prefix}{_track_display(track)}")
+    return "\n".join(lines)
+
+
+def _fetch_user_playlists_text(access_token: str | None, limit: int = 8) -> str:
+    if not access_token:
+        return _access_token_message()
+
+    safe_limit = max(1, min(limit, 20))
+    try:
+        playlists = spotify_get_paginated_items(
+            "/me/playlists",
+            access_token,
+            params={"limit": safe_limit},
+            max_pages=1,
+        )
+    except HTTPException as exc:
+        return str(exc.detail)
+
+    if not playlists:
+        return "No playlists were found or playlist read access is unavailable."
+
+    lines: list[str] = []
+    for index, playlist in enumerate(playlists[:safe_limit]):
+        if not isinstance(playlist, dict):
+            continue
+
+        name = playlist.get("name", "Untitled playlist")
+        description = html.unescape(str(playlist.get("description") or ""))
+        description = _normalize_whitespace(description)
+        track_total = ((playlist.get("tracks") or {}).get("total")) if isinstance(playlist.get("tracks"), dict) else None
+        base_line = f"- {name} ({track_total or 0} tracks)"
+        if description:
+            base_line += f": {description}"
+        lines.append(base_line)
+
+        playlist_id = playlist.get("id")
+        if index < 3 and isinstance(playlist_id, str) and playlist_id:
+            try:
+                sample_payload = spotify_get(
+                    f"/playlists/{playlist_id}/tracks",
+                    access_token,
+                    params={"limit": 3},
+                )
+                sample_items = sample_payload.get("items", [])
+                if isinstance(sample_items, list) and sample_items:
+                    sample_text = ", ".join(
+                        _track_display(_extract_track(item))
+                        for item in sample_items
+                        if isinstance(_extract_track(item), dict)
+                    )
+                    if sample_text:
+                        lines.append(f"  sample tracks: {sample_text}")
+            except HTTPException:
+                lines.append("  sample tracks unavailable")
+
+    return "\n".join(lines)
+
+
+def _fetch_currently_playing_text(access_token: str | None) -> str:
+    if not access_token:
+        return _access_token_message()
+
+    try:
+        payload = spotify_get("/me/player/currently-playing", access_token)
+    except HTTPException as exc:
+        return str(exc.detail)
+
+    current_item = payload.get("item")
+    if not isinstance(current_item, dict):
+        return "Nothing is currently playing on Spotify."
+
+    context_type = ((payload.get("context") or {}).get("type")) if isinstance(payload.get("context"), dict) else None
+    return (
+        f"Currently playing: {_track_display(current_item)}"
+        + (f" | context: {context_type}" if isinstance(context_type, str) and context_type else "")
+    )
+
+
+def _fetch_recent_session_text(access_token: str | None, limit: int = 15) -> str:
+    if not access_token:
+        return _access_token_message()
+
+    safe_limit = max(1, min(limit, 50))
+    try:
+        payload = spotify_get(
+            "/me/player/recently-played",
+            access_token,
+            params={"limit": safe_limit},
+        )
+    except HTTPException as exc:
+        return str(exc.detail)
+
+    items = payload.get("items", [])
+    if not isinstance(items, list) or not items:
+        return "No recent listening session data is available."
+    return _summarize_recent_session(items[:safe_limit])
+
+
+async def _get_feedback_profile_text(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> str:
+    entries = await list_recommendation_feedback(db, user_id, limit=40)
+    return _summarize_feedback(entries)
+
+
+async def _get_user_mood_text(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    preferred_context: str = "",
+) -> str:
+    mood_context = await get_user_mood_context(db, user_id)
+    if not mood_context:
+        return "No active stored mood context."
+
+    mood_value = str(mood_context.get("value", "")).strip()
+    context_value = str(mood_context.get("preferred_context", "")).strip()
+    expires_at = mood_context.get("expires_at")
+    response = f"Active mood: {mood_value or 'unknown'}"
+    if context_value:
+        response += f" | preferred context: {context_value}"
+    if isinstance(expires_at, datetime):
+        response += f" | expires at: {expires_at.isoformat()}"
+
+    requested_context = _normalize_whitespace(preferred_context.strip()) if preferred_context.strip() else ""
+    if requested_context and context_value and requested_context.lower() != context_value.lower():
+        response += f" | note: requested context '{requested_context}' differs from stored context."
+
+    return response
+
+
+async def _build_recommendation_context_bundle(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    music_profile: str,
+    access_token: str | None,
+) -> str:
+    sections = [
+        ("Stored music profile", music_profile),
+        ("Feedback profile", await _get_feedback_profile_text(db, user_id)),
+        ("Mood context", await _get_user_mood_text(db, user_id)),
+        ("Time context", _get_time_context_text()),
+    ]
+
+    if access_token:
+        sections.extend(
+            [
+                ("Saved tracks sample", _fetch_saved_tracks_text(access_token, limit=12)),
+                ("Playlist sample", _fetch_user_playlists_text(access_token, limit=8)),
+                ("Currently playing", _fetch_currently_playing_text(access_token)),
+                ("Recent session summary", _fetch_recent_session_text(access_token, limit=15)),
+            ]
+        )
+
+    formatted_sections = [
+        f"{title}:\n{content}"
+        for title, content in sections
+        if isinstance(content, str) and content.strip()
+    ]
+    return "\n\n".join(formatted_sections)
+
+
 def _build_tools(
     db: AsyncIOMotorDatabase,
     user_id: str,
     music_profile: str,
     access_token: str | None,
 ):
-    def _access_token_message() -> str:
-        return "Spotify access token not available. Cannot use this Spotify tool."
-
     @tool
     def get_music_profile() -> str:
         """Get the user's stored music taste profile based on their Spotify listening history and latest ingest snapshot."""
@@ -239,128 +455,22 @@ def _build_tools(
     @tool
     def get_saved_tracks(limit: int = 25) -> str:
         """Get a sample of the user's recently saved Spotify tracks to understand what they intentionally keep."""
-        if not access_token:
-            return _access_token_message()
-
-        safe_limit = max(1, min(limit, 50))
-        try:
-            items = spotify_get_paginated_items(
-                "/me/tracks",
-                access_token,
-                params={"limit": safe_limit},
-                max_pages=1,
-            )
-        except HTTPException as exc:
-            return str(exc.detail)
-        if not items:
-            return "No saved tracks were found or the user has not granted saved-track access."
-
-        lines = []
-        for item in items[:safe_limit]:
-            if not isinstance(item, dict):
-                continue
-            added_at = item.get("added_at")
-            track = _extract_track(item)
-            if not isinstance(track, dict):
-                continue
-            prefix = f"[saved {added_at}] " if isinstance(added_at, str) and added_at else ""
-            lines.append(f"- {prefix}{_track_display(track)}")
-        return "\n".join(lines)
+        return _fetch_saved_tracks_text(access_token, limit=limit)
 
     @tool
     def get_user_playlists(limit: int = 10) -> str:
         """Get the user's playlist themes and a few sample tracks. Use this to infer intent like workout, focus, late-night, or party music."""
-        if not access_token:
-            return _access_token_message()
-
-        safe_limit = max(1, min(limit, 20))
-        try:
-            playlists = spotify_get_paginated_items(
-                "/me/playlists",
-                access_token,
-                params={"limit": safe_limit},
-                max_pages=1,
-            )
-        except HTTPException as exc:
-            return str(exc.detail)
-        if not playlists:
-            return "No playlists were found or playlist read access is unavailable."
-
-        lines: list[str] = []
-        for index, playlist in enumerate(playlists[:safe_limit]):
-            if not isinstance(playlist, dict):
-                continue
-
-            name = playlist.get("name", "Untitled playlist")
-            description = html.unescape(str(playlist.get("description") or ""))
-            description = _normalize_whitespace(description)
-            track_total = ((playlist.get("tracks") or {}).get("total")) if isinstance(playlist.get("tracks"), dict) else None
-            base_line = f"- {name} ({track_total or 0} tracks)"
-            if description:
-                base_line += f": {description}"
-            lines.append(base_line)
-
-            playlist_id = playlist.get("id")
-            if index < 3 and isinstance(playlist_id, str) and playlist_id:
-                try:
-                    sample_payload = spotify_get(
-                        f"/playlists/{playlist_id}/tracks",
-                        access_token,
-                        params={"limit": 3},
-                    )
-                    sample_items = sample_payload.get("items", [])
-                    if isinstance(sample_items, list) and sample_items:
-                        sample_text = ", ".join(
-                            _track_display(_extract_track(item))
-                            for item in sample_items
-                            if isinstance(_extract_track(item), dict)
-                        )
-                        if sample_text:
-                            lines.append(f"  sample tracks: {sample_text}")
-                except HTTPException:
-                    lines.append("  sample tracks unavailable")
-
-        return "\n".join(lines)
+        return _fetch_user_playlists_text(access_token, limit=limit)
 
     @tool
     def get_currently_playing() -> str:
         """Get the track the user is playing right now, if any."""
-        if not access_token:
-            return _access_token_message()
-
-        try:
-            payload = spotify_get("/me/player/currently-playing", access_token)
-        except HTTPException as exc:
-            return str(exc.detail)
-        current_item = payload.get("item")
-        if not isinstance(current_item, dict):
-            return "Nothing is currently playing on Spotify."
-
-        context_type = ((payload.get("context") or {}).get("type")) if isinstance(payload.get("context"), dict) else None
-        return (
-            f"Currently playing: {_track_display(current_item)}"
-            + (f" | context: {context_type}" if isinstance(context_type, str) and context_type else "")
-        )
+        return _fetch_currently_playing_text(access_token)
 
     @tool
     def get_recent_session_summary(limit: int = 15) -> str:
         """Summarize the user's most recent listening session from Spotify recently played data."""
-        if not access_token:
-            return _access_token_message()
-
-        safe_limit = max(1, min(limit, 50))
-        try:
-            payload = spotify_get(
-                "/me/player/recently-played",
-                access_token,
-                params={"limit": safe_limit},
-            )
-        except HTTPException as exc:
-            return str(exc.detail)
-        items = payload.get("items", [])
-        if not isinstance(items, list) or not items:
-            return "No recent listening session data is available."
-        return _summarize_recent_session(items[:safe_limit])
+        return _fetch_recent_session_text(access_token, limit=limit)
 
     @tool
     async def record_feedback(
@@ -389,8 +499,7 @@ def _build_tools(
     @tool
     async def get_feedback_profile() -> str:
         """Get a summary of the user's prior recommendation feedback so new suggestions can adapt to it."""
-        entries = await list_recommendation_feedback(db, user_id, limit=40)
-        return _summarize_feedback(entries)
+        return await _get_feedback_profile_text(db, user_id)
 
     @tool
     async def set_user_mood(
@@ -421,48 +530,12 @@ def _build_tools(
     @tool
     async def get_user_mood(preferred_context: str = "") -> str:
         """Get the user's active short-lived mood or situational context, optionally filtered for a preferred context like study, commute, or workout."""
-        mood_context = await get_user_mood_context(db, user_id)
-        if not mood_context:
-            return "No active stored mood context."
-
-        mood_value = str(mood_context.get("value", "")).strip()
-        context_value = str(mood_context.get("preferred_context", "")).strip()
-        expires_at = mood_context.get("expires_at")
-        response = f"Active mood: {mood_value or 'unknown'}"
-        if context_value:
-            response += f" | preferred context: {context_value}"
-        if isinstance(expires_at, datetime):
-            response += f" | expires at: {expires_at.isoformat()}"
-
-        requested_context = _normalize_whitespace(preferred_context.strip()) if preferred_context.strip() else ""
-        if requested_context and context_value and requested_context.lower() != context_value.lower():
-            response += f" | note: requested context '{requested_context}' differs from stored context."
-
-        return response
+        return await _get_user_mood_text(db, user_id, preferred_context=preferred_context)
 
     @tool
     def get_time_context() -> str:
         """Get the current local time context to adapt recommendations to the moment, such as morning, late night, weekday, or weekend."""
-        now = datetime.now().astimezone()
-        hour = now.hour
-        if 5 <= hour < 11:
-            day_part = "morning"
-        elif 11 <= hour < 15:
-            day_part = "midday"
-        elif 15 <= hour < 19:
-            day_part = "afternoon"
-        elif 19 <= hour < 23:
-            day_part = "evening"
-        else:
-            day_part = "late night"
-
-        weekday = now.strftime("%A")
-        is_weekend = weekday in {"Saturday", "Sunday"}
-        weekend_label = "weekend" if is_weekend else "workweek"
-        return (
-            f"It is currently {now.isoformat()} local time. "
-            f"Context: {day_part}, {weekday}, {weekend_label}."
-        )
+        return _get_time_context_text()
 
     return [
         get_music_profile,
@@ -497,6 +570,12 @@ async def run_agent(
     else:
         music_profile = _summarize_snapshot(snapshot)
 
+    baseline_context = await _build_recommendation_context_bundle(
+        db,
+        user_id,
+        music_profile,
+        access_token,
+    )
     tools = _build_tools(db, user_id, music_profile, access_token)
 
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.7)
@@ -505,7 +584,7 @@ async def run_agent(
     result = await agent.ainvoke({
         "messages": [
             SystemMessage(content=SYSTEM_PROMPT),
-            SystemMessage(content=f"Here is the user's current music profile:\n{music_profile}"),
+            SystemMessage(content=f"Prefetched recommendation context bundle:\n{baseline_context}"),
             HumanMessage(content=user_message),
         ],
     })
