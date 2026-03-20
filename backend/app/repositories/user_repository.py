@@ -8,7 +8,7 @@ from pymongo import ASCENDING
 
 
 USER_COLLECTION = "users"
-PUBLIC_USER_PROJECTION = {"hashed_password": 0, "spotify": 0}
+PUBLIC_USER_PROJECTION = {"hashed_password": 0, "spotify": 0, "agent_context": 0}
 
 
 def _users_collection(db: AsyncIOMotorDatabase):
@@ -199,3 +199,99 @@ async def get_user_spotify_auth(
         return None
 
     return spotify_auth
+
+
+async def set_user_mood_context(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    mood: str,
+    preferred_context: str | None = None,
+    duration_hours: int = 8,
+) -> dict[str, Any] | None:
+    object_id = _to_object_id(user_id)
+    if object_id is None:
+        return None
+
+    now = _utc_now()
+    expires_at = now + timedelta(hours=max(duration_hours, 1))
+    payload = {
+        "agent_context.mood.value": mood,
+        "agent_context.mood.updated_at": now,
+        "agent_context.mood.expires_at": expires_at,
+        "updated_at": now,
+    }
+    if preferred_context:
+        payload["agent_context.mood.preferred_context"] = preferred_context
+
+    users = _users_collection(db)
+    update_doc: dict[str, Any] = {"$set": payload}
+    if not preferred_context:
+        update_doc["$unset"] = {"agent_context.mood.preferred_context": ""}
+
+    result = await users.update_one({"_id": object_id}, update_doc)
+    if result.matched_count == 0:
+        return None
+
+    doc = await users.find_one({"_id": object_id}, {"agent_context": 1})
+    return doc.get("agent_context", {}) if isinstance(doc, dict) else None
+
+
+async def clear_user_mood_context(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> None:
+    object_id = _to_object_id(user_id)
+    if object_id is None:
+        return
+
+    users = _users_collection(db)
+    await users.update_one(
+        {"_id": object_id},
+        {
+            "$unset": {
+                "agent_context.mood": "",
+            },
+            "$set": {
+                "updated_at": _utc_now(),
+            },
+        },
+    )
+
+
+async def get_user_mood_context(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> dict[str, Any] | None:
+    object_id = _to_object_id(user_id)
+    if object_id is None:
+        return None
+
+    users = _users_collection(db)
+    doc = await users.find_one({"_id": object_id}, {"agent_context.mood": 1})
+    if not doc:
+        return None
+
+    agent_context = doc.get("agent_context")
+    if not isinstance(agent_context, dict):
+        return None
+
+    mood_context = agent_context.get("mood")
+    if not isinstance(mood_context, dict):
+        return None
+
+    expires_at = mood_context.get("expires_at")
+    if isinstance(expires_at, datetime):
+        expires_dt = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    elif isinstance(expires_at, str):
+        try:
+            expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            expires_dt = None
+    else:
+        expires_dt = None
+
+    if expires_dt is None or expires_dt <= _utc_now():
+        await clear_user_mood_context(db, user_id)
+        return None
+
+    return mood_context

@@ -4,12 +4,16 @@ import hashlib
 import hmac
 import json
 from http.cookies import SimpleCookie
+import time
 from typing import Any
 
 from starlette.datastructures import MutableHeaders
 
 
 class SessionCookieMiddleware:
+    JWT_ALGORITHM = "HS256"
+    JWT_TYPE = "JWT"
+
     def __init__(
         self,
         app: Any,
@@ -26,33 +30,89 @@ class SessionCookieMiddleware:
         self.same_site = same_site
         self.https_only = https_only
 
-    def _sign(self, payload: str) -> str:
-        digest = hmac.new(self.secret_key, payload.encode("utf-8"), hashlib.sha256)
-        return digest.hexdigest()
+    def _b64url_encode(self, value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+    def _b64url_decode(self, value: str) -> bytes:
+        padding = "=" * (-len(value) % 4)
+        return base64.urlsafe_b64decode(f"{value}{padding}")
+
+    def _sign(self, signing_input: bytes) -> str:
+        digest = hmac.new(self.secret_key, signing_input, hashlib.sha256).digest()
+        return self._b64url_encode(digest)
 
     def _serialize_session(self, session: dict[str, Any]) -> str:
-        payload = json.dumps(session, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        encoded_payload = base64.urlsafe_b64encode(payload).decode("utf-8").rstrip("=")
-        signature = self._sign(encoded_payload)
-        return f"{encoded_payload}.{signature}"
+        now = int(time.time())
+        header = {"alg": self.JWT_ALGORITHM, "typ": self.JWT_TYPE}
+        payload = {
+            "iat": now,
+            "exp": now + self.max_age,
+            "session": session,
+        }
 
-    def _deserialize_session(self, value: str) -> dict[str, Any]:
+        header_segment = self._b64url_encode(
+            json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        payload_segment = self._b64url_encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
+        signature_segment = self._sign(signing_input)
+        return f"{header_segment}.{payload_segment}.{signature_segment}"
+
+    def _deserialize_legacy_session(self, value: str) -> dict[str, Any]:
         try:
             encoded_payload, signature = value.rsplit(".", 1)
         except ValueError:
             return {}
 
-        expected_signature = self._sign(encoded_payload)
+        expected_signature = hmac.new(
+            self.secret_key,
+            encoded_payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
         if not hmac.compare_digest(signature, expected_signature):
             return {}
 
         try:
-            padding = "=" * (-len(encoded_payload) % 4)
-            payload = base64.urlsafe_b64decode(f"{encoded_payload}{padding}")
+            payload = self._b64url_decode(encoded_payload)
             session = json.loads(payload.decode("utf-8"))
         except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
             return {}
 
+        return session if isinstance(session, dict) else {}
+
+    def _deserialize_session(self, value: str) -> dict[str, Any]:
+        if value.count(".") == 1:
+            return self._deserialize_legacy_session(value)
+
+        try:
+            header_segment, payload_segment, signature_segment = value.split(".")
+        except ValueError:
+            return {}
+
+        signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
+        expected_signature = self._sign(signing_input)
+        if not hmac.compare_digest(signature_segment, expected_signature):
+            return {}
+
+        try:
+            header = json.loads(self._b64url_decode(header_segment).decode("utf-8"))
+            payload = json.loads(self._b64url_decode(payload_segment).decode("utf-8"))
+        except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            return {}
+
+        if header.get("alg") != self.JWT_ALGORITHM or header.get("typ") != self.JWT_TYPE:
+            return {}
+
+        exp = payload.get("exp")
+        if not isinstance(exp, int) or exp <= int(time.time()):
+            return {}
+
+        session = payload.get("session")
         return session if isinstance(session, dict) else {}
 
     def _build_set_cookie(self, value: str) -> str:

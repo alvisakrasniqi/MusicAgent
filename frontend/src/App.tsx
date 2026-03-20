@@ -6,6 +6,18 @@ import AuthCallbackPage from './pages/AuthCallbackPage';
 import RecommendationsPage from './pages/RecommendationsPage';
 
 function App() {
+  if (
+    typeof window !== 'undefined' &&
+    process.env.NODE_ENV === 'development' &&
+    window.location.protocol === 'http:' &&
+    window.location.hostname === 'localhost'
+  ) {
+    const normalizedUrl = new URL(window.location.href);
+    normalizedUrl.hostname = '127.0.0.1';
+    window.location.replace(normalizedUrl.toString());
+    return null;
+  }
+
   return (
     <AuthProvider>
       <Router>

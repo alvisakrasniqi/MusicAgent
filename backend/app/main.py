@@ -7,9 +7,10 @@ from app.api.routes.users import router as users_router
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_database
 from app.core.session import SessionCookieMiddleware
+from app.repositories.recommendation_repository import create_recommendation_feedback_indexes
 from app.repositories.spotify_repository import create_spotify_snapshot_indexes
 from app.repositories.user_repository import create_user_indexes
-from app.api.routes.spotify import router as spotify_router
+from app.api.routes.spotify import legacy_callback_router, router as spotify_router
 from app.api.routes.recommendations import router as recommendations_router
 
 @asynccontextmanager
@@ -17,6 +18,7 @@ async def lifespan(app: FastAPI):
     db = await connect_to_mongo()
     await create_user_indexes(db)
     await create_spotify_snapshot_indexes(db)
+    await create_recommendation_feedback_indexes(db)
     try:
         yield
     finally:
@@ -37,12 +39,10 @@ app.add_middleware(
     https_only=settings.SESSION_HTTPS_ONLY,
 )
 
-# Allow React app origin
+# Accept the configured frontend plus common local dev origins so browser
+# preflight requests succeed whether the app is opened via localhost or 127.0.0.1.
 allowed_origins = sorted(
     {
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:5174",
         settings.FRONTEND_URL.rstrip("/"),
     }
 )
@@ -50,6 +50,7 @@ allowed_origins = sorted(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,6 +59,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(spotify_router, prefix="/api", tags=["spotify"])
+app.include_router(legacy_callback_router)
 app.include_router(recommendations_router, prefix="/api", tags=["recommendations"])
 
 

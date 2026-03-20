@@ -4,6 +4,31 @@ import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 
 import { api } from '../lib/api';
 
+function getDetailMessage(errorResponse: unknown): string | null {
+  if (typeof errorResponse !== 'object' || errorResponse === null || !('response' in errorResponse)) {
+    return null;
+  }
+
+  const response = (
+    errorResponse as { response?: { data?: { detail?: unknown } } }
+  ).response;
+  const detail = response?.data?.detail;
+
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  if (detail && typeof detail === 'object') {
+    if ('message' in detail && typeof detail.message === 'string') {
+      return detail.message;
+    }
+
+    return JSON.stringify(detail);
+  }
+
+  return null;
+}
+
 const AuthCallbackPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -49,18 +74,7 @@ const AuthCallbackPage: React.FC = () => {
         }
 
         setStatus('error');
-
-        if (typeof errorResponse === 'object' && errorResponse !== null && 'response' in errorResponse) {
-          const response = (
-            errorResponse as { response?: { data?: { detail?: unknown } } }
-          ).response;
-          if (typeof response?.data?.detail === 'string') {
-            setMessage(response.data.detail);
-            return;
-          }
-        }
-
-        setMessage('Failed to finish Spotify ingestion for the logged-in user.');
+        setMessage(getDetailMessage(errorResponse) ?? 'Failed to finish Spotify ingestion for the logged-in user.');
       }
     }
 

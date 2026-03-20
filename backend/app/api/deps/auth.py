@@ -9,6 +9,7 @@ from app.repositories.user_repository import get_user_by_id
 
 SESSION_USER_ID_KEY = "user_id"
 SPOTIFY_STATE_SESSION_KEY = "spotify_oauth_state"
+FRONTEND_ORIGIN_SESSION_KEY = "frontend_origin"
 
 
 def set_authenticated_session(request: Request, user_id: str) -> None:
@@ -26,6 +27,15 @@ def set_spotify_oauth_state(request: Request, state: str) -> None:
 
 def pop_spotify_oauth_state(request: Request) -> str | None:
     return request.session.pop(SPOTIFY_STATE_SESSION_KEY, None)
+
+
+def set_frontend_origin(request: Request, origin: str) -> None:
+    request.session[FRONTEND_ORIGIN_SESSION_KEY] = origin
+
+
+def get_frontend_origin(request: Request) -> str | None:
+    origin = request.session.get(FRONTEND_ORIGIN_SESSION_KEY)
+    return origin if isinstance(origin, str) and origin else None
 
 
 async def get_optional_current_user(

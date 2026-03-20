@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.agent.music_agent import run_agent
 from app.api.deps.auth import get_current_user
 from app.core.database import get_database
-from app.repositories.user_repository import get_user_spotify_auth
+from app.services.spotify_api import get_valid_user_spotify_access_token
 
 router = APIRouter()
 
@@ -26,13 +26,7 @@ async def _get_valid_access_token(
     db: AsyncIOMotorDatabase,
     user_id: str,
 ) -> str:
-    spotify_auth = await get_user_spotify_auth(db, user_id)
-    if not spotify_auth or not spotify_auth.get("access_token"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Spotify not linked. Connect Spotify first.",
-        )
-    return spotify_auth["access_token"]
+    return await get_valid_user_spotify_access_token(db, user_id)
 
 
 @router.post("/recommendations/chat", response_model=ChatResponse)
