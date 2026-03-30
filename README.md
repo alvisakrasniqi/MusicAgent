@@ -166,6 +166,9 @@ Backend health check:
 
 ```text
 GET http://127.0.0.1:8000/health
+GET http://127.0.0.1:8000/health/ready
+GET http://127.0.0.1:8000/health/agent
+GET http://127.0.0.1:8000/health/agent/live
 ```
 
 ## Frontend Setup
@@ -250,6 +253,13 @@ Stored in `recommendation_feedback`:
 
 - `POST /api/recommendations/chat`
 - `POST /api/recommendations/quick`
+
+### Health
+
+- `GET /health`
+- `GET /health/ready`
+- `GET /health/agent`
+- `GET /health/agent/live`
 
 ## Development Notes
 
