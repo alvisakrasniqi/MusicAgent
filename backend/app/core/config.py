@@ -9,7 +9,7 @@ BACKEND_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 class Settings(BaseSettings):
     SPOTIFY_CLIENT_ID: str
     SPOTIFY_CLIENT_SECRET: str
-    SPOTIFY_REDIRECT_URI: str
+    SPOTIFY_REDIRECT_URI: str = "http://127.0.0.1:8000/auth/spotify/callback"
     FRONTEND_URL: str = "http://localhost:3000"
     SESSION_SECRET_KEY: str = "change-me-in-production"
     SESSION_COOKIE_NAME: str = "music_agent_session"
