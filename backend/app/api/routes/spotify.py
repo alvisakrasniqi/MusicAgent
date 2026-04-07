@@ -85,6 +85,119 @@ def _safe_optional_spotify_get(
             return {}
         raise
 
+
+def _safe_spotify_get(
+    path: str,
+    access_token: str,
+    warnings: list[str],
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        return spotify_get(path, access_token, params=params)
+    except HTTPException as exc:
+        warnings.append(str(exc.detail))
+        return {}
+
+
+async def _ingest_spotify_for_user(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> dict[str, Any]:
+    access_token = await get_valid_user_spotify_access_token(db, user_id)
+    warnings: list[str] = []
+
+    top_tracks_payload = _safe_spotify_get(
+        "/me/top/tracks",
+        access_token,
+        warnings,
+        params={"limit": 50, "time_range": "medium_term"},
+    )
+    top_artists_payload = _safe_spotify_get(
+        "/me/top/artists",
+        access_token,
+        warnings,
+        params={"limit": 50, "time_range": "medium_term"},
+    )
+    recently_played_payload = _safe_spotify_get(
+        "/me/player/recently-played",
+        access_token,
+        warnings,
+        params={"limit": 50},
+    )
+    saved_tracks_payload = _safe_optional_spotify_get(
+        "/me/tracks",
+        access_token,
+        warnings,
+        params={"limit": 50},
+    )
+    user_playlists_payload = _safe_optional_spotify_get(
+        "/me/playlists",
+        access_token,
+        warnings,
+        params={"limit": 20},
+    )
+    currently_playing_payload = _safe_optional_spotify_get(
+        "/me/player/currently-playing",
+        access_token,
+        warnings,
+    )
+
+    top_tracks = top_tracks_payload.get("items", [])
+    track_ids = [track.get("id") for track in top_tracks if track.get("id")]
+
+    audio_features_payload: list[dict[str, Any]] = []
+    for i in range(0, len(track_ids), 100):
+        chunk_ids = track_ids[i : i + 100]
+        if not chunk_ids:
+            continue
+        try:
+            features_response = spotify_get(
+                "/audio-features",
+                access_token,
+                params={"ids": ",".join(chunk_ids)},
+            )
+        except HTTPException as exc:
+            warnings.append(str(exc.detail))
+            break
+
+        features = features_response.get("audio_features", [])
+        audio_features_payload.extend([f for f in features if f])
+
+    snapshot_id = await create_spotify_ingestion_snapshot(
+        db,
+        user_id,
+        {
+            "top_tracks": top_tracks,
+            "top_artists": top_artists_payload.get("items", []),
+            "recently_played": recently_played_payload.get("items", []),
+            "saved_tracks": saved_tracks_payload.get("items", []),
+            "user_playlists": user_playlists_payload.get("items", []),
+            "currently_playing": currently_playing_payload or None,
+            "audio_features": audio_features_payload,
+            "source": "spotify_api_v1",
+            "warnings": warnings,
+        },
+    )
+
+    if snapshot_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return {
+        "stored": True,
+        "user_id": user_id,
+        "snapshot_id": snapshot_id,
+        "counts": {
+            "top_tracks": len(top_tracks),
+            "top_artists": len(top_artists_payload.get("items", [])),
+            "recently_played": len(recently_played_payload.get("items", [])),
+            "saved_tracks": len(saved_tracks_payload.get("items", [])),
+            "user_playlists": len(user_playlists_payload.get("items", [])),
+            "currently_playing": 1 if currently_playing_payload else 0,
+            "audio_features": len(audio_features_payload),
+        },
+        "warnings": warnings,
+    }
+
 @router.get("/spotify/login")
 def spotify_login(
     request: Request,
@@ -146,14 +259,30 @@ async def _spotify_callback_impl(
 
     try:
         token_payload = exchange_code_for_token(code, redirect_uri)
-    except (HTTPException, requests.RequestException):
+    except HTTPException as exc:
+        return _frontend_callback_redirect(
+            request,
+            {"error": "token_exchange_failed", "error_detail": str(exc.detail)},
+        )
+    except requests.RequestException:
         return _frontend_callback_redirect(request, {"error": "token_exchange_failed"})
 
     updated_user = await save_user_spotify_tokens(db, current_user["_id"], token_payload)
     if not updated_user:
         return _frontend_callback_redirect(request, {"error": "user_not_found"})
 
-    return _frontend_callback_redirect(request, {"status": "linked"})
+    redirect_params = {"status": "linked"}
+    try:
+        await _ingest_spotify_for_user(db, current_user["_id"])
+        redirect_params["ingestion"] = "completed"
+    except HTTPException as exc:
+        redirect_params["ingestion"] = "failed"
+        redirect_params["ingestion_error"] = str(exc.detail)
+    except Exception:
+        redirect_params["ingestion"] = "failed"
+        redirect_params["ingestion_error"] = "Unexpected server error during Spotify sync."
+
+    return _frontend_callback_redirect(request, redirect_params)
 
 
 @router.get("/spotify/callback")
@@ -185,99 +314,4 @@ async def spotify_ingest(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict[str, Any]:
-    user_id = current_user["_id"]
-    access_token = await get_valid_user_spotify_access_token(db, user_id)
-
-    top_tracks_payload = spotify_get(
-        "/me/top/tracks",
-        access_token,
-        params={"limit": 50, "time_range": "medium_term"},
-    )
-    top_artists_payload = spotify_get(
-        "/me/top/artists",
-        access_token,
-        params={"limit": 50, "time_range": "medium_term"},
-    )
-    recently_played_payload = spotify_get(
-        "/me/player/recently-played",
-        access_token,
-        params={"limit": 50},
-    )
-    warnings: list[str] = []
-    saved_tracks_payload = _safe_optional_spotify_get(
-        "/me/tracks",
-        access_token,
-        warnings,
-        params={"limit": 50},
-    )
-    user_playlists_payload = _safe_optional_spotify_get(
-        "/me/playlists",
-        access_token,
-        warnings,
-        params={"limit": 20},
-    )
-    currently_playing_payload = _safe_optional_spotify_get(
-        "/me/player/currently-playing",
-        access_token,
-        warnings,
-    )
-
-    top_tracks = top_tracks_payload.get("items", [])
-    track_ids = [track.get("id") for track in top_tracks if track.get("id")]
-
-    audio_features_payload: list[dict[str, Any]] = []
-    for i in range(0, len(track_ids), 100):
-        chunk_ids = track_ids[i : i + 100]
-        if not chunk_ids:
-            continue
-        try:
-            features_response = spotify_get(
-                "/audio-features",
-                access_token,
-                params={"ids": ",".join(chunk_ids)},
-            )
-        except HTTPException as exc:
-            # Spotify restricts audio-features access for many new or development-mode apps.
-            # Recommendations can still work from top tracks, artists, and recent plays.
-            if exc.status_code in {401, 403, 404}:
-                warnings.append(str(exc.detail))
-                break
-            raise
-
-        features = features_response.get("audio_features", [])
-        audio_features_payload.extend([f for f in features if f])
-
-    snapshot_id = await create_spotify_ingestion_snapshot(
-        db,
-        user_id,
-        {
-            "top_tracks": top_tracks,
-            "top_artists": top_artists_payload.get("items", []),
-            "recently_played": recently_played_payload.get("items", []),
-            "saved_tracks": saved_tracks_payload.get("items", []),
-            "user_playlists": user_playlists_payload.get("items", []),
-            "currently_playing": currently_playing_payload or None,
-            "audio_features": audio_features_payload,
-            "source": "spotify_api_v1",
-            "warnings": warnings,
-        },
-    )
-
-    if snapshot_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    return {
-        "stored": True,
-        "user_id": user_id,
-        "snapshot_id": snapshot_id,
-        "counts": {
-            "top_tracks": len(top_tracks),
-            "top_artists": len(top_artists_payload.get("items", [])),
-            "recently_played": len(recently_played_payload.get("items", [])),
-            "saved_tracks": len(saved_tracks_payload.get("items", [])),
-            "user_playlists": len(user_playlists_payload.get("items", [])),
-            "currently_playing": 1 if currently_playing_payload else 0,
-            "audio_features": len(audio_features_payload),
-        },
-        "warnings": warnings,
-    }
+    return await _ingest_spotify_for_user(db, current_user["_id"])

@@ -10,6 +10,18 @@ interface Message {
   content: string;
 }
 
+function getErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (error as { response?: { data?: { detail?: unknown } } }).response;
+    const detail = response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail;
+    }
+  }
+
+  return 'Something went wrong. Please try again.';
+}
+
 const RecommendationsPage: React.FC = () => {
   const { user, isLoading } = useAuth();
   const navigate = useNavigate();
@@ -30,10 +42,10 @@ const RecommendationsPage: React.FC = () => {
     try {
       const data = await postChat(trimmed);
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
-    } catch {
+    } catch (error) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: 'Something went wrong. Please try again.' },
+        { role: 'assistant', content: getErrorMessage(error) },
       ]);
     } finally {
       setIsSending(false);
@@ -51,10 +63,10 @@ const RecommendationsPage: React.FC = () => {
     try {
       const data = await postQuickRecommend();
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
-    } catch {
+    } catch (error) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: 'Something went wrong. Please try again.' },
+        { role: 'assistant', content: getErrorMessage(error) },
       ]);
     } finally {
       setIsSending(false);

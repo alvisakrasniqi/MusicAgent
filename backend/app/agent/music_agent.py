@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -28,6 +28,14 @@ recent session behavior, stored mood context, and prior recommendation feedback.
 A recommendation context bundle is already prefetched and provided in the system prompt. \
 Treat that bundle as your baseline source of truth before deciding whether to call any \
 extra tools.
+
+Never claim you do not have access to the user's Spotify listening history, saved music, \
+or playlists if the system messages indicate that a Spotify snapshot is available. When a \
+snapshot is available, ground your answer in that prefetched bundle even if some live Spotify \
+tool calls fail.
+
+Only say that Spotify history is unavailable when the system messages explicitly say there is \
+no stored Spotify snapshot for this user.
 
 Use this data to understand the user's taste and provide personalized music \
 recommendations. When recommending songs:
@@ -211,6 +219,55 @@ def _summarize_snapshot(snapshot: dict[str, Any]) -> str:
 
 def _access_token_message() -> str:
     return "Spotify access token not available. Cannot use this Spotify tool."
+
+
+def _snapshot_availability_message(snapshot: dict[str, Any] | None) -> str:
+    if not snapshot:
+        return (
+            "Spotify snapshot status: missing. There is no stored Spotify ingest snapshot for this user yet. "
+            "You may acknowledge that stored Spotify history is unavailable."
+        )
+
+    counts = {
+        "top_tracks": len(snapshot.get("top_tracks", [])) if isinstance(snapshot.get("top_tracks"), list) else 0,
+        "top_artists": len(snapshot.get("top_artists", [])) if isinstance(snapshot.get("top_artists"), list) else 0,
+        "recently_played": len(snapshot.get("recently_played", [])) if isinstance(snapshot.get("recently_played"), list) else 0,
+        "saved_tracks": len(snapshot.get("saved_tracks", [])) if isinstance(snapshot.get("saved_tracks"), list) else 0,
+        "user_playlists": len(snapshot.get("user_playlists", [])) if isinstance(snapshot.get("user_playlists"), list) else 0,
+        "audio_features": len(snapshot.get("audio_features", [])) if isinstance(snapshot.get("audio_features"), list) else 0,
+    }
+    return (
+        "Spotify snapshot status: available. Do not say you lack access to the user's Spotify history. "
+        f"Stored counts: {counts}."
+    )
+
+
+def _response_falsely_claims_missing_spotify_data(reply: str) -> bool:
+    normalized = _normalize_whitespace(reply).lower()
+    blocked_phrases = [
+        "i am missing access to your spotify listening history",
+        "i'm missing access to your spotify listening history",
+        "i don't have access to your spotify listening history",
+        "i do not have access to your spotify listening history",
+        "since i don't have access to your spotify listening history",
+        "since i do not have access to your spotify listening history",
+        "i don't have access to your spotify listening data",
+        "i do not have access to your spotify listening data",
+        "i can't access your spotify listening history",
+        "i cannot access your spotify listening history",
+        "i'm unable to access your spotify listening history",
+        "i am unable to access your spotify listening history",
+        "without access to your spotify listening history",
+    ]
+    return any(phrase in normalized for phrase in blocked_phrases)
+
+
+def _extract_agent_reply(result: dict[str, Any]) -> str | None:
+    messages = result.get("messages", [])
+    for msg in reversed(messages):
+        if hasattr(msg, "content") and msg.content and msg.type != "human":
+            return msg.content
+    return None
 
 
 def _get_time_context_text() -> str:
@@ -569,6 +626,13 @@ async def run_agent(
     user_message: str,
     access_token: str | None = None,
 ) -> str:
+    google_api_key = settings.GOOGLE_API_KEY.strip()
+    if not google_api_key or google_api_key == "your_google_api_key":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Recommendations are not configured yet. Set a valid GOOGLE_API_KEY in backend/.env.",
+        )
+
     os.environ.setdefault("GOOGLE_API_KEY", settings.GOOGLE_API_KEY)
     os.environ.setdefault("LANGSMITH_API_KEY", settings.LANGSMITH_API_KEY)
     if settings.LANGSMITH_TRACING:
@@ -580,6 +644,7 @@ async def run_agent(
         music_profile = "No Spotify data found. The user hasn't ingested their listening history yet."
     else:
         music_profile = _summarize_snapshot(snapshot)
+    snapshot_status = _snapshot_availability_message(snapshot)
 
     baseline_context = await _build_recommendation_context_bundle(
         db,
@@ -592,17 +657,47 @@ async def run_agent(
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.7)
     agent = create_react_agent(llm, tools)
 
-    result = await agent.ainvoke({
-        "messages": [
-            SystemMessage(content=SYSTEM_PROMPT),
-            SystemMessage(content=f"Prefetched recommendation context bundle:\n{baseline_context}"),
-            HumanMessage(content=user_message),
-        ],
-    })
+    try:
+        result = await agent.ainvoke({
+            "messages": [
+                SystemMessage(content=SYSTEM_PROMPT),
+                SystemMessage(content=snapshot_status),
+                SystemMessage(content=f"Prefetched recommendation context bundle:\n{baseline_context}"),
+                HumanMessage(content=user_message),
+            ],
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Recommendation generation failed: {exc}",
+        ) from exc
 
-    messages = result.get("messages", [])
-    # The last message from the agent is the final response
-    for msg in reversed(messages):
-        if hasattr(msg, "content") and msg.content and msg.type != "human":
-            return msg.content
+    reply = _extract_agent_reply(result)
+    if snapshot and reply and _response_falsely_claims_missing_spotify_data(reply):
+        try:
+            retry_result = await agent.ainvoke({
+                "messages": [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    SystemMessage(content=snapshot_status),
+                    SystemMessage(content=f"Prefetched recommendation context bundle:\n{baseline_context}"),
+                    HumanMessage(
+                        content=(
+                            f"Original user request: {user_message}\n\n"
+                            "Your previous draft incorrectly claimed the user's Spotify history was unavailable. "
+                            "A Spotify snapshot is available. Rewrite the answer using the prefetched Spotify "
+                            "context. Do not say the Spotify history is missing or inaccessible."
+                        )
+                    ),
+                ],
+            })
+            retried_reply = _extract_agent_reply(retry_result)
+            if retried_reply:
+                return retried_reply
+        except Exception:
+            pass
+
+    if reply:
+        return reply
     return "I wasn't able to generate recommendations. Please try again."

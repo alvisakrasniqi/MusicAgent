@@ -2,33 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 
-import { api } from '../lib/api';
-
-function getDetailMessage(errorResponse: unknown): string | null {
-  if (typeof errorResponse !== 'object' || errorResponse === null || !('response' in errorResponse)) {
-    return null;
-  }
-
-  const response = (
-    errorResponse as { response?: { data?: { detail?: unknown } } }
-  ).response;
-  const detail = response?.data?.detail;
-
-  if (typeof detail === 'string') {
-    return detail;
-  }
-
-  if (detail && typeof detail === 'object') {
-    if ('message' in detail && typeof detail.message === 'string') {
-      return detail.message;
-    }
-
-    return JSON.stringify(detail);
-  }
-
-  return null;
-}
-
 const AuthCallbackPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -38,10 +11,17 @@ const AuthCallbackPage: React.FC = () => {
   useEffect(() => {
     const spotifyStatus = searchParams.get('status');
     const error = searchParams.get('error');
+    const errorDetail = searchParams.get('error_detail');
+    const ingestionStatus = searchParams.get('ingestion');
+    const ingestionError = searchParams.get('ingestion_error');
 
     if (error) {
       setStatus('error');
-      setMessage(`Spotify authorization failed: ${error}`);
+      setMessage(
+        errorDetail
+          ? `Spotify authorization failed: ${errorDetail}`
+          : `Spotify authorization failed: ${error}`
+      );
       return;
     }
 
@@ -52,36 +32,19 @@ const AuthCallbackPage: React.FC = () => {
     }
 
     let redirectTimer: number | undefined;
-    let isMounted = true;
-
-    async function syncSpotifyData() {
-      try {
-        setMessage('Ingesting your Spotify history...');
-        await api.post('/api/spotify/ingest');
-
-        if (!isMounted) {
-          return;
-        }
-
-        setStatus('success');
-        setMessage('Spotify connected. Redirecting back to your account...');
-        redirectTimer = window.setTimeout(() => {
-          window.location.replace('/');
-        }, 1800);
-      } catch (errorResponse) {
-        if (!isMounted) {
-          return;
-        }
-
-        setStatus('error');
-        setMessage(getDetailMessage(errorResponse) ?? 'Failed to finish Spotify ingestion for the logged-in user.');
-      }
+    setStatus('success');
+    if (ingestionStatus === 'failed' && ingestionError) {
+      setMessage(`Spotify connected, but the first library sync hit an issue: ${ingestionError}`);
+    } else if (ingestionStatus === 'completed') {
+      setMessage('Spotify connected and your listening history was synced. Redirecting back to your account...');
+    } else {
+      setMessage('Spotify connected. Redirecting back to your account...');
     }
-
-    void syncSpotifyData();
+    redirectTimer = window.setTimeout(() => {
+      window.location.replace('/');
+    }, 1800);
 
     return () => {
-      isMounted = false;
       if (redirectTimer) {
         window.clearTimeout(redirectTimer);
       }
