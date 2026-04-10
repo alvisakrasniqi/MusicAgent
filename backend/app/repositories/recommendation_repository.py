@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -14,7 +16,7 @@ def _feedback_collection(db: AsyncIOMotorDatabase):
     return db[FEEDBACK_COLLECTION]
 
 
-def _to_object_id(user_id: str) -> ObjectId | None:
+def _to_object_id(user_id: str) -> Optional[ObjectId]:
     try:
         return ObjectId(user_id)
     except (InvalidId, TypeError):
@@ -25,7 +27,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _serialize_feedback(document: dict[str, Any] | None) -> dict[str, Any] | None:
+def _serialize_feedback(document: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not document:
         return None
 
@@ -44,7 +46,7 @@ async def record_recommendation_feedback(
     db: AsyncIOMotorDatabase,
     user_id: str,
     feedback_doc: dict[str, Any],
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None

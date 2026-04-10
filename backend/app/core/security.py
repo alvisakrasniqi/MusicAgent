@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import hashlib
 import hmac
 import secrets
+from typing import Optional
 
 
 PBKDF2_ALGORITHM = "sha256"
@@ -20,7 +23,7 @@ def hash_password(password: str) -> str:
     return f"{PBKDF2_PREFIX}${PBKDF2_ITERATIONS}${salt.hex()}${derived_key.hex()}"
 
 
-def verify_password(password: str, stored_hash: str | None) -> bool:
+def verify_password(password: str, stored_hash: Optional[str]) -> bool:
     if not stored_hash:
         return False
 

@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 import urllib.parse
+import json
 
 import requests
 from fastapi import HTTPException, status
@@ -33,6 +36,16 @@ def describe_spotify_error(payload: Any, status_code: int, context: str) -> str:
     return f"Spotify {context} failed with status {status_code}."
 
 
+def _parse_json_response(response: requests.Response) -> Any:
+    if not response.content:
+        return {}
+
+    try:
+        return response.json()
+    except (requests.exceptions.JSONDecodeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def exchange_code_for_token(code: str, redirect_uri: str) -> dict[str, Any]:
     token_url = "https://accounts.spotify.com/api/token"
     data = {
@@ -43,8 +56,15 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> dict[str, Any]:
         "client_secret": settings.SPOTIFY_CLIENT_SECRET,
     }
 
-    response = requests.post(token_url, data=data, timeout=20)
-    payload = response.json()
+    try:
+        response = requests.post(token_url, data=data, timeout=20)
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Spotify token exchange request failed: {exc}",
+        ) from exc
+
+    payload = _parse_json_response(response)
 
     if response.status_code >= 400:
         raise HTTPException(
@@ -64,8 +84,15 @@ def refresh_spotify_access_token(refresh_token: str) -> dict[str, Any]:
         "client_secret": settings.SPOTIFY_CLIENT_SECRET,
     }
 
-    response = requests.post(token_url, data=data, timeout=20)
-    payload = response.json()
+    try:
+        response = requests.post(token_url, data=data, timeout=20)
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Spotify token refresh request failed: {exc}",
+        ) from exc
+
+    payload = _parse_json_response(response)
 
     if response.status_code >= 400:
         raise HTTPException(
@@ -79,12 +106,19 @@ def refresh_spotify_access_token(refresh_token: str) -> dict[str, Any]:
 def spotify_get(
     path: str,
     access_token: str,
-    params: dict[str, Any] | None = None,
+    params: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     url = f"{SPOTIFY_API_BASE}{path}"
     headers = {"Authorization": f"Bearer {access_token}"}
-    response = requests.get(url, headers=headers, params=params, timeout=20)
-    payload = response.json() if response.content else {}
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=20)
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Spotify request to {path} failed: {exc}",
+        ) from exc
+
+    payload = _parse_json_response(response)
 
     if response.status_code >= 400:
         raise HTTPException(
@@ -98,7 +132,7 @@ def spotify_get(
 def spotify_get_paginated_items(
     path: str,
     access_token: str,
-    params: dict[str, Any] | None = None,
+    params: Optional[dict[str, Any]] = None,
     item_key: str = "items",
     max_pages: int = 1,
 ) -> list[dict[str, Any]]:
