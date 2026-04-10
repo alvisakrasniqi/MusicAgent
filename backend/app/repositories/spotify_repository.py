@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -14,7 +16,7 @@ def _spotify_snapshots_collection(db: AsyncIOMotorDatabase):
     return db[SPOTIFY_SNAPSHOT_COLLECTION]
 
 
-def _to_object_id(user_id: str) -> ObjectId | None:
+def _to_object_id(user_id: str) -> Optional[ObjectId]:
     try:
         return ObjectId(user_id)
     except (InvalidId, TypeError):
@@ -33,7 +35,7 @@ async def create_spotify_snapshot_indexes(db: AsyncIOMotorDatabase) -> None:
 async def get_latest_spotify_snapshot(
     db: AsyncIOMotorDatabase,
     user_id: str,
-) -> dict | None:
+) -> Optional[dict]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None
@@ -53,7 +55,7 @@ async def create_spotify_ingestion_snapshot(
     db: AsyncIOMotorDatabase,
     user_id: str,
     snapshot_payload: dict[str, Any],
-) -> str | None:
+) -> Optional[str]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None

@@ -1,4 +1,6 @@
-from typing import Any
+from __future__ import annotations
+
+from typing import Any, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -25,7 +27,7 @@ def set_spotify_oauth_state(request: Request, state: str) -> None:
     request.session[SPOTIFY_STATE_SESSION_KEY] = state
 
 
-def pop_spotify_oauth_state(request: Request) -> str | None:
+def pop_spotify_oauth_state(request: Request) -> Optional[str]:
     return request.session.pop(SPOTIFY_STATE_SESSION_KEY, None)
 
 
@@ -33,7 +35,7 @@ def set_frontend_origin(request: Request, origin: str) -> None:
     request.session[FRONTEND_ORIGIN_SESSION_KEY] = origin
 
 
-def get_frontend_origin(request: Request) -> str | None:
+def get_frontend_origin(request: Request) -> Optional[str]:
     origin = request.session.get(FRONTEND_ORIGIN_SESSION_KEY)
     return origin if isinstance(origin, str) and origin else None
 
@@ -41,7 +43,7 @@ def get_frontend_origin(request: Request) -> str | None:
 async def get_optional_current_user(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_database),
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     user_id = request.session.get(SESSION_USER_ID_KEY)
     if not user_id:
         return None
@@ -55,7 +57,7 @@ async def get_optional_current_user(
 
 
 async def get_current_user(
-    current_user: dict[str, Any] | None = Depends(get_optional_current_user),
+    current_user: Optional[dict[str, Any]] = Depends(get_optional_current_user),
 ) -> dict[str, Any]:
     if not current_user:
         raise HTTPException(

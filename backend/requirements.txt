@@ -8,5 +8,6 @@ pydantic[email]
 certifi
 requests
 langchain
+langgraph
 langchain-google-genai
 langsmith

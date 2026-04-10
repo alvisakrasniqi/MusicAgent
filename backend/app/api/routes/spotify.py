@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 import secrets
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -32,7 +34,7 @@ legacy_callback_router = APIRouter()
 SPOTIFY_REDIRECT_URI_SESSION_KEY = "spotify_redirect_uri"
 
 
-def _extract_frontend_origin(request: Request) -> str | None:
+def _extract_frontend_origin(request: Request) -> Optional[str]:
     candidate = request.headers.get("origin")
     if not candidate:
         referer = request.headers.get("referer")
@@ -75,7 +77,7 @@ def _safe_optional_spotify_get(
     path: str,
     access_token: str,
     warnings: list[str],
-    params: dict[str, Any] | None = None,
+    params: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     try:
         return spotify_get(path, access_token, params=params)
@@ -90,7 +92,7 @@ def _safe_spotify_get(
     path: str,
     access_token: str,
     warnings: list[str],
-    params: dict[str, Any] | None = None,
+    params: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     try:
         return spotify_get(path, access_token, params=params)
@@ -238,10 +240,10 @@ def spotify_login(
 
 async def _spotify_callback_impl(
     request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    current_user: dict[str, Any] | None = Depends(get_optional_current_user),
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    current_user: Optional[dict[str, Any]] = Depends(get_optional_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     if not current_user:
@@ -288,10 +290,10 @@ async def _spotify_callback_impl(
 @router.get("/spotify/callback")
 async def spotify_callback(
     request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    current_user: dict[str, Any] | None = Depends(get_optional_current_user),
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    current_user: Optional[dict[str, Any]] = Depends(get_optional_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     return await _spotify_callback_impl(request, code, state, error, current_user, db)
@@ -300,10 +302,10 @@ async def spotify_callback(
 @legacy_callback_router.get("/auth/spotify/callback", include_in_schema=False)
 async def spotify_callback_legacy(
     request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    current_user: dict[str, Any] | None = Depends(get_optional_current_user),
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    current_user: Optional[dict[str, Any]] = Depends(get_optional_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     return await _spotify_callback_impl(request, code, state, error, current_user, db)

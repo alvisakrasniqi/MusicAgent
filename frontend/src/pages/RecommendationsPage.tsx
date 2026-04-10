@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Loader2, Send, Sparkles } from 'lucide-react';
+import { ArrowLeft, Compass, Loader2, Send, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../context/AuthContext';
-import { postChat, postQuickRecommend } from '../lib/api';
+import { postChat, postDiscoverMusic, postQuickRecommend } from '../lib/api';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -73,6 +73,37 @@ const RecommendationsPage: React.FC = () => {
     }
   }
 
+  async function handleDiscoverMusic() {
+    if (isSending) return;
+
+    const discoveryContext = input.trim();
+    setIsSending(true);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'user',
+        content: discoveryContext
+          ? `Discover music for this vibe: ${discoveryContext}`
+          : 'Discover music I have not listened to before.',
+      },
+    ]);
+    if (discoveryContext) {
+      setInput('');
+    }
+
+    try {
+      const data = await postDiscoverMusic(discoveryContext || undefined);
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: getErrorMessage(error) },
+      ]);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
@@ -123,14 +154,24 @@ const RecommendationsPage: React.FC = () => {
           <h1 className="text-lg font-bold">MusicAgent</h1>
           <p className="text-xs text-slate-500">AI-powered music recommendations</p>
         </div>
-        <button
-          onClick={handleQuickRecommend}
-          disabled={isSending}
-          className="ml-auto inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 px-4 py-2 text-sm font-semibold transition hover:scale-[1.01] disabled:opacity-60"
-        >
-          <Sparkles className="h-4 w-4" />
-          Quick recommend
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={handleDiscoverMusic}
+            disabled={isSending}
+            className="inline-flex items-center gap-2 rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/20 disabled:opacity-60"
+          >
+            <Compass className="h-4 w-4" />
+            Discover Music
+          </button>
+          <button
+            onClick={handleQuickRecommend}
+            disabled={isSending}
+            className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 px-4 py-2 text-sm font-semibold transition hover:scale-[1.01] disabled:opacity-60"
+          >
+            <Sparkles className="h-4 w-4" />
+            Quick recommend
+          </button>
+        </div>
       </header>
 
       {/* Messages */}
@@ -141,7 +182,8 @@ const RecommendationsPage: React.FC = () => {
             <p className="text-xl font-semibold text-slate-200">What kind of music are you in the mood for?</p>
             <p className="text-sm text-slate-500 max-w-md">
               Ask me anything — "something chill for studying", "energetic workout playlist",
-              or "artists similar to my top listens".
+              or "artists similar to my top listens". Use `Discover Music` to force fresh picks
+              you have not already been listening to.
             </p>
           </div>
         )}
@@ -176,7 +218,7 @@ const RecommendationsPage: React.FC = () => {
         <div className="mx-auto flex max-w-2xl items-center gap-3">
           <input
             className="flex-1 rounded-2xl border border-slate-800 bg-slate-900 px-5 py-3 text-sm text-white outline-none transition focus:border-indigo-400 placeholder:text-slate-600"
-            placeholder="Ask for music recommendations..."
+            placeholder="Ask for recommendations or type a vibe, then press Discover Music..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={isSending}

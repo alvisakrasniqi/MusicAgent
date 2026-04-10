@@ -17,3 +17,10 @@ export async function postQuickRecommend() {
   const res = await api.post('/api/recommendations/quick');
   return res.data as { reply: string; timestamp: string };
 }
+
+export async function postDiscoverMusic(message?: string) {
+  const res = await api.post('/api/recommendations/discover', {
+    message: message?.trim() ? message.trim() : undefined,
+  });
+  return res.data as { reply: string; timestamp: string };
+}

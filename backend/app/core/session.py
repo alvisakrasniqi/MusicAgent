@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import binascii
 import hashlib
@@ -5,7 +7,7 @@ import hmac
 import json
 from http.cookies import SimpleCookie
 import time
-from typing import Any
+from typing import Any, Optional
 
 from starlette.datastructures import MutableHeaders
 
@@ -143,7 +145,7 @@ class SessionCookieMiddleware:
 
         return "; ".join(parts)
 
-    def _extract_cookie_value(self, scope: dict[str, Any]) -> str | None:
+    def _extract_cookie_value(self, scope: dict[str, Any]) -> Optional[str]:
         raw_cookie_header = None
         for header_name, header_value in scope.get("headers", []):
             if header_name == b"cookie":

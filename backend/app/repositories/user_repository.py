@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -15,14 +17,14 @@ def _users_collection(db: AsyncIOMotorDatabase):
     return db[USER_COLLECTION]
 
 
-def _to_object_id(user_id: str) -> ObjectId | None:
+def _to_object_id(user_id: str) -> Optional[ObjectId]:
     try:
         return ObjectId(user_id)
     except (InvalidId, TypeError):
         return None
 
 
-def _serialize_user(document: dict[str, Any] | None) -> dict[str, Any] | None:
+def _serialize_user(document: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not document:
         return None
 
@@ -43,7 +45,7 @@ async def create_user_indexes(db: AsyncIOMotorDatabase) -> None:
 async def create_user(
     db: AsyncIOMotorDatabase,
     user_doc: dict[str, Any],
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     users = _users_collection(db)
 
     now = _utc_now()
@@ -73,7 +75,7 @@ async def list_users(
 async def get_user_by_id(
     db: AsyncIOMotorDatabase,
     user_id: str,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None
@@ -87,7 +89,7 @@ async def get_user_by_username(
     db: AsyncIOMotorDatabase,
     username: str,
     include_password_hash: bool = False,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     users = _users_collection(db)
     projection = None if include_password_hash else PUBLIC_USER_PROJECTION
     doc = await users.find_one({"username": username}, projection)
@@ -98,7 +100,7 @@ async def get_user_by_email(
     db: AsyncIOMotorDatabase,
     email: str,
     include_password_hash: bool = False,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     users = _users_collection(db)
     projection = None if include_password_hash else PUBLIC_USER_PROJECTION
     doc = await users.find_one({"email": email}, projection)
@@ -109,7 +111,7 @@ async def update_user(
     db: AsyncIOMotorDatabase,
     user_id: str,
     update_data: dict[str, Any],
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None
@@ -146,7 +148,7 @@ async def save_user_spotify_tokens(
     db: AsyncIOMotorDatabase,
     user_id: str,
     token_payload: dict[str, Any],
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None
@@ -184,7 +186,7 @@ async def save_user_spotify_tokens(
 async def get_user_spotify_auth(
     db: AsyncIOMotorDatabase,
     user_id: str,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None
@@ -205,9 +207,9 @@ async def set_user_mood_context(
     db: AsyncIOMotorDatabase,
     user_id: str,
     mood: str,
-    preferred_context: str | None = None,
+    preferred_context: Optional[str] = None,
     duration_hours: int = 8,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None
@@ -261,7 +263,7 @@ async def clear_user_mood_context(
 async def get_user_mood_context(
     db: AsyncIOMotorDatabase,
     user_id: str,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     object_id = _to_object_id(user_id)
     if object_id is None:
         return None

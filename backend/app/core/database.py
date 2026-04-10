@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -17,8 +20,8 @@ if load_dotenv is not None:
     load_dotenv(dotenv_path=backend_env, override=False)
 
 
-_mongo_client: AsyncIOMotorClient | None = None
-_database: AsyncIOMotorDatabase | None = None
+_mongo_client: Optional[AsyncIOMotorClient] = None
+_database: Optional[AsyncIOMotorDatabase] = None
 
 
 def _get_mongo_uri() -> str:

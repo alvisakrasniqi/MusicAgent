@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -20,6 +20,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     timestamp: str
+
+
+class DiscoverRequest(BaseModel):
+    message: Optional[str] = Field(default=None, max_length=2000)
 
 
 async def _get_valid_access_token(
@@ -63,6 +67,38 @@ async def quick_recommend(
             "why it fits my taste."
         ),
         access_token,
+    )
+
+    return ChatResponse(
+        reply=reply,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@router.post("/recommendations/discover", response_model=ChatResponse)
+async def discover_music(
+    body: DiscoverRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> ChatResponse:
+    user_id = current_user["_id"]
+    access_token = await _get_valid_access_token(db, user_id)
+
+    message = (body.message or "").strip()
+    prompt = (
+        "Recommend 5 songs I am likely to love that do not appear in my known Spotify "
+        "listening history. Focus on helping me discover new music, verify real tracks on "
+        "Spotify, and keep the picks aligned with my taste."
+    )
+    if message:
+        prompt += f" Right now I want something with this vibe or context: {message}"
+
+    reply = await run_agent(
+        db,
+        user_id,
+        prompt,
+        access_token,
+        mode="discover",
     )
 
     return ChatResponse(

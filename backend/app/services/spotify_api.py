@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 import urllib.parse
 import json
 
@@ -104,7 +106,7 @@ def refresh_spotify_access_token(refresh_token: str) -> dict[str, Any]:
 def spotify_get(
     path: str,
     access_token: str,
-    params: dict[str, Any] | None = None,
+    params: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     url = f"{SPOTIFY_API_BASE}{path}"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -130,7 +132,7 @@ def spotify_get(
 def spotify_get_paginated_items(
     path: str,
     access_token: str,
-    params: dict[str, Any] | None = None,
+    params: Optional[dict[str, Any]] = None,
     item_key: str = "items",
     max_pages: int = 1,
 ) -> list[dict[str, Any]]:
