@@ -148,6 +148,7 @@ FRONTEND_URL=http://127.0.0.1:3000
 SESSION_SECRET_KEY=change-me-in-production
 SESSION_COOKIE_NAME=music_agent_session
 SESSION_MAX_AGE_SECONDS=604800
+SESSION_SAME_SITE=lax
 SESSION_HTTPS_ONLY=false
 
 GOOGLE_API_KEY=your_google_api_key
@@ -191,6 +192,40 @@ Optional frontend env override:
 
 ```env
 REACT_APP_API_BASE_URL=http://127.0.0.1:8000
+```
+
+## Render Deployment
+
+Use the repo root `render.yaml` as the source of truth:
+
+- Backend: Render web service (`python`)
+- Frontend: Render static site (`static`)
+
+If Render shows logs like `Running 'npm run start'` and `react-scripts start`, the frontend was created as a Node web service instead of the static site defined in `render.yaml`.
+
+For the frontend service on Render:
+
+- Service type must be `Static Site`
+- Build command: `npm install && npm run build`
+- Publish directory: `build`
+- Environment variable: `REACT_APP_API_BASE_URL=https://<your-backend-domain>`
+
+For the backend service on Render:
+
+- `FRONTEND_URL=https://<your-frontend-domain>`
+- `SESSION_SAME_SITE=None`
+- `SESSION_HTTPS_ONLY=true`
+
+Why those backend cookie settings matter:
+
+- Your frontend sends credentialed requests with `withCredentials: true`
+- Separate `*.onrender.com` frontend/backend hostnames are treated as cross-site for cookies
+- `SameSite=Lax` is not sufficient for this setup
+
+Also update Spotify's redirect URI in the Spotify developer dashboard to your deployed backend callback, for example:
+
+```text
+https://<your-backend-domain>/auth/spotify/callback
 ```
 
 ## Spotify OAuth Setup

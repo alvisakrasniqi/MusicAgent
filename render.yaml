@@ -5,6 +5,13 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FRONTEND_URL
+        sync: false
+      - key: SESSION_SAME_SITE
+        value: "None"
+      - key: SESSION_HTTPS_ONLY
+        value: "true"
 
   - type: web
     name: musicagent-frontend
@@ -12,6 +19,9 @@ services:
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: build
+    envVars:
+      - key: REACT_APP_API_BASE_URL
+        sync: false
     routes:
       - type: rewrite
         source: /*

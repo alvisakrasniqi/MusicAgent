@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     SESSION_SECRET_KEY: str = "change-me-in-production"
     SESSION_COOKIE_NAME: str = "music_agent_session"
     SESSION_MAX_AGE_SECONDS: int = 604800
+    SESSION_SAME_SITE: str = "lax"
     SESSION_HTTPS_ONLY: bool = False
     GOOGLE_API_KEY: str = ""
     LANGSMITH_API_KEY: str = ""

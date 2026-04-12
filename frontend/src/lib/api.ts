@@ -1,10 +1,22 @@
 import axios from 'axios';
 
-export const API_BASE_URL =
-  process.env.REACT_APP_API_BASE_URL ?? 'http://127.0.0.1:8000';
+function getApiBaseUrl() {
+  const configuredBaseUrl = process.env.REACT_APP_API_BASE_URL?.trim();
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/+$/, '');
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    return 'http://127.0.0.1:8000';
+  }
+
+  return '';
+}
+
+export const API_BASE_URL = getApiBaseUrl();
 
 export const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: API_BASE_URL || undefined,
   withCredentials: true,
 });
 

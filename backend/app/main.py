@@ -31,12 +31,24 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="MusicAgent API", lifespan=lifespan)
 
+session_same_site = settings.SESSION_SAME_SITE.strip().lower()
+session_same_site_header = {
+    "lax": "Lax",
+    "strict": "Strict",
+    "none": "None",
+}.get(session_same_site)
+
+if session_same_site_header is None:
+    raise ValueError(
+        "SESSION_SAME_SITE must be one of: lax, strict, none"
+    )
+
 app.add_middleware(
     SessionCookieMiddleware,
     secret_key=settings.SESSION_SECRET_KEY,
     session_cookie=settings.SESSION_COOKIE_NAME,
     max_age=settings.SESSION_MAX_AGE_SECONDS,
-    same_site="lax",
+    same_site=session_same_site_header,
     https_only=settings.SESSION_HTTPS_ONLY,
 )
 
